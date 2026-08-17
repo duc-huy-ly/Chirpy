@@ -29,6 +29,10 @@ func (cfg *apiConfig) requestLogger(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(hits))
 }
 
+func (cfg *apiConfig) reset(w http.ResponseWriter, r *http.Request) {
+	cfg.fileserverHits = atomic.Int32{}
+}
+
 func main() {
 	const fileRootPath = "."
 	const port = "8080"
@@ -42,6 +46,7 @@ func main() {
 
 	mux.HandleFunc("/healthz", http.HandlerFunc(okResponseHandler))
 	mux.HandleFunc("/metrics", http.HandlerFunc(apiCfg.requestLogger))
+	mux.HandleFunc("/reset", http.HandlerFunc(apiCfg.reset))
 
 	server := &http.Server{
 		Handler: mux,
