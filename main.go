@@ -25,7 +25,14 @@ func okResponseHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) requestLogger(w http.ResponseWriter, r *http.Request) {
-	hits := fmt.Sprintf("Hits: %v", cfg.fileserverHits.Load())
+	hits := fmt.Sprintf(`
+	<html>
+  <body>
+    <h1>Welcome, Chirpy Admin</h1>
+    <p>Chirpy has been visited %d times!</p>
+  </body>
+</html>`, cfg.fileserverHits.Load())
+	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(hits))
 }
 
@@ -44,9 +51,9 @@ func main() {
 	handler := http.StripPrefix("/app", http.FileServer(http.Dir(fileRootPath)))
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(handler))
 
-	mux.HandleFunc("/healthz", http.HandlerFunc(okResponseHandler))
-	mux.HandleFunc("/metrics", http.HandlerFunc(apiCfg.requestLogger))
-	mux.HandleFunc("/reset", http.HandlerFunc(apiCfg.reset))
+	mux.HandleFunc("GET /api/healthz", http.HandlerFunc(okResponseHandler))
+	mux.HandleFunc("GET /admin/metrics", http.HandlerFunc(apiCfg.requestLogger))
+	mux.HandleFunc("POST /admin/reset", http.HandlerFunc(apiCfg.reset))
 
 	server := &http.Server{
 		Handler: mux,
