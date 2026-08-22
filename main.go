@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -40,6 +41,53 @@ func (cfg *apiConfig) reset(w http.ResponseWriter, r *http.Request) {
 	cfg.fileserverHits = atomic.Int32{}
 }
 
+func validate(w http.ResponseWriter, r *http.Request) {
+	const maxChirpSize int = 140
+	// Decode the request body
+	type params struct {
+		Body string `json:"body"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	p := params{}
+	err := decoder.Decode(&p)
+	if err != nil {
+		respondWithError(w, 400, "Error decoding the response")
+		return
+	}
+
+	if len(p.Body) >= maxChirpSize {
+		respondWithError(w, 400, "Chirp is too long")
+		return
+	}
+	// encode the response
+	type myResponse struct {
+		Valid bool `json:"valid"`
+	}
+	respondWithJson(w, 200, myResponse{Valid: true})
+}
+
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	log.Printf("%s\n", msg)
+	type errResponse struct {
+		Error string `json:"error"`
+	}
+	respondWithJson(w, code, errResponse{
+		Error: msg,
+	})
+}
+
+func respondWithJson(w http.ResponseWriter, code int, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s\n", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(data)
+}
+
 func main() {
 	const fileRootPath = "."
 	const port = "8080"
@@ -54,6 +102,7 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", http.HandlerFunc(okResponseHandler))
 	mux.HandleFunc("GET /admin/metrics", http.HandlerFunc(apiCfg.requestLogger))
 	mux.HandleFunc("POST /admin/reset", http.HandlerFunc(apiCfg.reset))
+	mux.HandleFunc("POST /api/validate_chirp", http.HandlerFunc(validate))
 
 	server := &http.Server{
 		Handler: mux,
