@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
+	"strings"
 	"sync/atomic"
 )
 
@@ -48,22 +50,26 @@ func validate(w http.ResponseWriter, r *http.Request) {
 		Body string `json:"body"`
 	}
 	decoder := json.NewDecoder(r.Body)
-	p := params{}
-	err := decoder.Decode(&p)
+	decodedParameters := params{}
+	err := decoder.Decode(&decodedParameters)
 	if err != nil {
 		respondWithError(w, 400, "Error decoding the response")
 		return
 	}
 
-	if len(p.Body) >= maxChirpSize {
+	if len(decodedParameters.Body) >= maxChirpSize {
 		respondWithError(w, 400, "Chirp is too long")
 		return
 	}
+
+	// Replace all profane words with static 4 char string ****
+	listOfNotAllowedWords := []string{"kerfuffle", "sharbert", "fornax"}
+	cleanedBody := censorBadWords(listOfNotAllowedWords, decodedParameters.Body)
 	// encode the response
 	type myResponse struct {
-		Valid bool `json:"valid"`
+		Body string `json:"cleaned_body"`
 	}
-	respondWithJson(w, 200, myResponse{Valid: true})
+	respondWithJson(w, 200, myResponse{Body: cleanedBody})
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {
@@ -86,6 +92,20 @@ func respondWithJson(w http.ResponseWriter, code int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	w.Write(data)
+}
+
+func censorBadWords(notAllowedWords []string, body string) string {
+	splitBody := strings.Split(body, " ")
+	result := make([]string, 0)
+	for _, word := range splitBody {
+		wordToLower := strings.ToLower(word)
+		if slices.Contains(notAllowedWords, wordToLower) {
+			result = append(result, "****")
+			continue
+		}
+		result = append(result, word)
+	}
+	return strings.Join(result, " ")
 }
 
 func main() {
