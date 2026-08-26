@@ -21,6 +21,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	datatase       *database.Queries
+	platform       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -49,7 +50,16 @@ func (cfg *apiConfig) requestLogger(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) reset(w http.ResponseWriter, r *http.Request) {
+	if cfg.platform != "dev" {
+		respondWithError(w, 403, "Forbidden")
+		return
+	}
 	cfg.fileserverHits = atomic.Int32{}
+	err := cfg.datatase.DeleteAll(r.Context())
+	if err != nil {
+		respondWithError(w, 400, "Could not delete all users from database")
+		return
+	}
 }
 
 func validate(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +154,7 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 		Email     string    `json:"email"`
 	}
 
-	respondWithJSON(w, 200, myRespnse{
+	respondWithJSON(w, 201, myRespnse{
 		ID:        uuid.UUID(newUser.ID),
 		CreatedAt: newUser.CreatedAt,
 		UpdatedAt: newUser.UpdatedAt,
@@ -158,6 +168,7 @@ func main() {
 		log.Fatalf("error getting the env variables : %s\n", err)
 	}
 	dbURL := os.Getenv("DB_URL")
+	currentPlatform := os.Getenv("PLATFORM")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatalf("error opening databse : %s\n", err)
@@ -171,6 +182,7 @@ func main() {
 	apiCfg := &apiConfig{
 		fileserverHits: atomic.Int32{},
 		datatase:       dbQueries,
+		platform:       currentPlatform,
 	}
 
 	mux := http.NewServeMux()
@@ -181,7 +193,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", http.HandlerFunc(apiCfg.requestLogger))
 	mux.HandleFunc("POST /admin/reset", http.HandlerFunc(apiCfg.reset))
 	mux.HandleFunc("POST /api/validate_chirp", http.HandlerFunc(validate))
-	mux.HandleFunc("POST /api/createUser", http.HandlerFunc(apiCfg.createUser))
+	mux.HandleFunc("POST /api/users", http.HandlerFunc(apiCfg.createUser))
 
 	server := &http.Server{
 		Handler: mux,
