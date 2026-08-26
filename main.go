@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
+	"uuid"
 
 	"github.com/duc-huy-ly/Chirpy/internal/database"
 	"github.com/joho/godotenv"
@@ -115,13 +117,47 @@ func censorBadWords(notAllowedWords []string, body string) string {
 	return strings.Join(result, " ")
 }
 
+func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
+	// accepts an email in the request body
+	type params struct {
+		Email string `json:"email"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decodedParameters := params{}
+	err := decoder.Decode(&decodedParameters)
+	if err != nil {
+		respondWithError(w, 400, "Error decoding the email from the request")
+		return
+	}
+	newUser, err := cfg.datatase.CreateUser(r.Context(), decodedParameters.Email)
+	if err != nil {
+		respondWithError(w, 400, "Error creating new User in database")
+		return
+	}
+
+	// Response time
+
+	type myRespnse struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+
+	respondWithJSON(w, 200, myRespnse{
+		ID:        uuid.UUID(newUser.ID),
+		CreatedAt: newUser.CreatedAt,
+		UpdatedAt: newUser.UpdatedAt,
+		Email:     newUser.Email,
+	})
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
 		log.Fatalf("error getting the env variables : %s\n", err)
 	}
 	dbURL := os.Getenv("DB_URL")
-	// fmt.Printf("%s", dbURL)
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatalf("error opening databse : %s\n", err)
@@ -145,6 +181,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", http.HandlerFunc(apiCfg.requestLogger))
 	mux.HandleFunc("POST /admin/reset", http.HandlerFunc(apiCfg.reset))
 	mux.HandleFunc("POST /api/validate_chirp", http.HandlerFunc(validate))
+	mux.HandleFunc("POST /api/createUser", http.HandlerFunc(apiCfg.createUser))
 
 	server := &http.Server{
 		Handler: mux,
