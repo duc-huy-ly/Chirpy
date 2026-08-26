@@ -1,17 +1,24 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
+
+	"github.com/duc-huy-ly/Chirpy/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	datatase       *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -34,7 +41,7 @@ func (cfg *apiConfig) requestLogger(w http.ResponseWriter, r *http.Request) {
     <h1>Welcome, Chirpy Admin</h1>
     <p>Chirpy has been visited %d times!</p>
   </body>
-</html>`, cfg.fileserverHits.Load())
+	</html>`, cfg.fileserverHits.Load())
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(hits))
 }
@@ -69,7 +76,7 @@ func validate(w http.ResponseWriter, r *http.Request) {
 	type myResponse struct {
 		Body string `json:"cleaned_body"`
 	}
-	respondWithJson(w, 200, myResponse{Body: cleanedBody})
+	respondWithJSON(w, 200, myResponse{Body: cleanedBody})
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {
@@ -77,12 +84,12 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 	type errResponse struct {
 		Error string `json:"error"`
 	}
-	respondWithJson(w, code, errResponse{
+	respondWithJSON(w, code, errResponse{
 		Error: msg,
 	})
 }
 
-func respondWithJson(w http.ResponseWriter, code int, payload any) {
+func respondWithJSON(w http.ResponseWriter, code int, payload any) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s\n", err)
@@ -109,10 +116,25 @@ func censorBadWords(notAllowedWords []string, body string) string {
 }
 
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatalf("error getting the env variables : %s\n", err)
+	}
+	dbURL := os.Getenv("DB_URL")
+	// fmt.Printf("%s", dbURL)
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatalf("error opening databse : %s\n", err)
+		return
+	}
+	dbQueries := database.New(db)
+
 	const fileRootPath = "."
 	const port = "8080"
+
 	apiCfg := &apiConfig{
 		fileserverHits: atomic.Int32{},
+		datatase:       dbQueries,
 	}
 
 	mux := http.NewServeMux()
