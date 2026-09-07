@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,7 +12,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-	"uuid"
+
+	"github.com/google/uuid"
 
 	"github.com/duc-huy-ly/Chirpy/internal/database"
 	"github.com/joho/godotenv"
@@ -55,18 +57,19 @@ func (cfg *apiConfig) reset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg.fileserverHits = atomic.Int32{}
-	err := cfg.datatase.DeleteAll(r.Context())
+	err := cfg.datatase.DeleteUsers(r.Context())
 	if err != nil {
 		respondWithError(w, 400, "Could not delete all users from database")
 		return
 	}
 }
 
-func validate(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) createChirp(w http.ResponseWriter, r *http.Request) {
+	// Validation
 	const maxChirpSize int = 140
-	// Decode the request body
 	type params struct {
-		Body string `json:"body"`
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	decodedParameters := params{}
@@ -75,20 +78,35 @@ func validate(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 400, "Error decoding the response")
 		return
 	}
-
 	if len(decodedParameters.Body) >= maxChirpSize {
 		respondWithError(w, 400, "Chirp is too long")
 		return
 	}
-
-	// Replace all profane words with static 4 char string ****
 	listOfNotAllowedWords := []string{"kerfuffle", "sharbert", "fornax"}
 	cleanedBody := censorBadWords(listOfNotAllowedWords, decodedParameters.Body)
-	// encode the response
-	type myResponse struct {
-		Body string `json:"cleaned_body"`
+	newChirpParams := database.CreateChirpParams{
+		Body:   cleanedBody,
+		UserID: decodedParameters.UserID,
 	}
-	respondWithJSON(w, 200, myResponse{Body: cleanedBody})
+	newChirpInDatabase, err := cfg.datatase.CreateChirp(context.Background(), newChirpParams)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+		return
+	}
+	type createdChirpResponse struct {
+		ID        uuid.UUID `json:"id"`
+		Body      string    `json:"body"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+	respondWithJSON(w, 201, createdChirpResponse{
+		ID:        newChirpInDatabase.ID,
+		Body:      cleanedBody,
+		CreatedAt: newChirpInDatabase.CreatedAt,
+		UpdatedAt: newChirpInDatabase.UpdatedAt,
+		UserID:    newChirpInDatabase.UserID,
+	})
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {
@@ -145,16 +163,14 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Response time
-
-	type myRespnse struct {
+	type myResponse struct {
 		ID        uuid.UUID `json:"id"`
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email     string    `json:"email"`
 	}
 
-	respondWithJSON(w, 201, myRespnse{
+	respondWithJSON(w, 201, myResponse{
 		ID:        uuid.UUID(newUser.ID),
 		CreatedAt: newUser.CreatedAt,
 		UpdatedAt: newUser.UpdatedAt,
@@ -192,7 +208,7 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", http.HandlerFunc(okResponseHandler))
 	mux.HandleFunc("GET /admin/metrics", http.HandlerFunc(apiCfg.requestLogger))
 	mux.HandleFunc("POST /admin/reset", http.HandlerFunc(apiCfg.reset))
-	mux.HandleFunc("POST /api/validate_chirp", http.HandlerFunc(validate))
+	mux.HandleFunc("POST /api/chirps", http.HandlerFunc(apiCfg.createChirp))
 	mux.HandleFunc("POST /api/users", http.HandlerFunc(apiCfg.createUser))
 
 	server := &http.Server{
