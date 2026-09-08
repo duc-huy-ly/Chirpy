@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
-
+	"github.com/duc-huy-ly/Chirpy/internal/auth"
 	"github.com/duc-huy-ly/Chirpy/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -32,6 +32,13 @@ type chirpResponseStruct struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	UserID    uuid.UUID `json:"user_id"`
+}
+
+type userResponseStruct struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -149,7 +156,8 @@ func censorBadWords(notAllowedWords []string, body string) string {
 func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 	// accepts an email in the request body
 	type params struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	decodedParameters := params{}
@@ -158,7 +166,16 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 400, "Error decoding the email from the request")
 		return
 	}
-	newUser, err := cfg.datatase.CreateUser(r.Context(), decodedParameters.Email)
+	hashedPassword, err := auth.HashPassword(decodedParameters.Password)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+	}
+
+	newUserParams := database.CreateUserParams{
+		Email:          decodedParameters.Email,
+		HashedPassword: hashedPassword,
+	}
+	newUser, err := cfg.datatase.CreateUser(r.Context(), newUserParams)
 	if err != nil {
 		respondWithError(w, 400, "Error creating new User in database")
 		return
@@ -176,6 +193,41 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: newUser.CreatedAt,
 		UpdatedAt: newUser.UpdatedAt,
 		Email:     newUser.Email,
+	})
+}
+
+func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
+	type params struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decodedParams := params{}
+	err := decoder.Decode(&decodedParams)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+		return
+	}
+	user, err := cfg.datatase.GetUser(context.Background(), decodedParams.Email)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+		return
+	}
+	validPassword, err := auth.CheckPasswordHash(decodedParams.Password, user.HashedPassword)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+		return
+	}
+	if !validPassword {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	respondWithJSON(w, 200, userResponseStruct{
+		user.ID,
+		user.CreatedAt,
+		user.UpdatedAt,
+		user.Email,
 	})
 }
 
@@ -253,6 +305,8 @@ func main() {
 	mux.HandleFunc("POST /api/users", http.HandlerFunc(apiCfg.createUser))
 	mux.HandleFunc("GET /api/chirps", http.HandlerFunc(apiCfg.handlerGetChirps))
 	mux.HandleFunc("GET /api/chirps/{chirpID}", http.HandlerFunc(apiCfg.handlerGetChirpFromID))
+	mux.HandleFunc("POST /api/login", http.HandlerFunc(apiCfg.handlerLogin))
+
 	server := &http.Server{
 		Handler: mux,
 		Addr:    ":" + port,
