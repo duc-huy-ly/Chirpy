@@ -26,6 +26,14 @@ type apiConfig struct {
 	platform       string
 }
 
+type chirpResponseStruct struct {
+	ID        uuid.UUID `json:"id"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
@@ -93,14 +101,7 @@ func (cfg *apiConfig) createChirp(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 400, err.Error())
 		return
 	}
-	type createdChirpResponse struct {
-		ID        uuid.UUID `json:"id"`
-		Body      string    `json:"body"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		UserID    uuid.UUID `json:"user_id"`
-	}
-	respondWithJSON(w, 201, createdChirpResponse{
+	respondWithJSON(w, 201, chirpResponseStruct{
 		ID:        newChirpInDatabase.ID,
 		Body:      cleanedBody,
 		CreatedAt: newChirpInDatabase.CreatedAt,
@@ -178,6 +179,25 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Used by the 'GET /api/chirps' endpoint, returns an array of all chirps in ascending created_at order
+func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	chirps, err := cfg.datatase.GetChirps(context.Background())
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+		return
+	}
+
+	response := make([]chirpResponseStruct, len(chirps))
+	for i, chirp := range chirps {
+		response[i].ID = chirp.ID
+		response[i].Body = chirp.Body
+		response[i].UserID = chirp.UserID
+		response[i].CreatedAt = chirp.CreatedAt
+		response[i].UpdatedAt = chirp.UpdatedAt
+	}
+	respondWithJSON(w, 200, response)
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -210,7 +230,7 @@ func main() {
 	mux.HandleFunc("POST /admin/reset", http.HandlerFunc(apiCfg.reset))
 	mux.HandleFunc("POST /api/chirps", http.HandlerFunc(apiCfg.createChirp))
 	mux.HandleFunc("POST /api/users", http.HandlerFunc(apiCfg.createUser))
-
+	mux.HandleFunc("GET /api/chirps", http.HandlerFunc(apiCfg.handlerGetChirps))
 	server := &http.Server{
 		Handler: mux,
 		Addr:    ":" + port,
