@@ -198,6 +198,27 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, 200, response)
 }
 
+func (cfg *apiConfig) handlerGetChirpFromID(w http.ResponseWriter, r *http.Request) {
+	IDString := r.PathValue("chirpID")
+	chirpUUID, err := uuid.Parse(IDString)
+	if err != nil {
+		respondWithError(w, 400, "Error parsing the ID of chirp inside the request")
+		return
+	}
+	chirp, err := cfg.datatase.GetChirpByID(context.Background(), chirpUUID)
+	if err != nil {
+		respondWithError(w, 404, "Chirp not found")
+		return
+	}
+	respondWithJSON(w, 200, chirpResponseStruct{
+		chirp.ID,
+		chirp.Body,
+		chirp.CreatedAt,
+		chirp.UpdatedAt,
+		chirp.UserID,
+	})
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -231,6 +252,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", http.HandlerFunc(apiCfg.createChirp))
 	mux.HandleFunc("POST /api/users", http.HandlerFunc(apiCfg.createUser))
 	mux.HandleFunc("GET /api/chirps", http.HandlerFunc(apiCfg.handlerGetChirps))
+	mux.HandleFunc("GET /api/chirps/{chirpID}", http.HandlerFunc(apiCfg.handlerGetChirpFromID))
 	server := &http.Server{
 		Handler: mux,
 		Addr:    ":" + port,
