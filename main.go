@@ -23,7 +23,7 @@ import (
 type userLoginParams struct {
 	Email            string `json:"email"`
 	Password         string `json:"password"`
-	ExpiresInSeconds *int   `json:"expires_in_seconds"`
+	ExpiresInSeconds int    `json:"expires_in_seconds"`
 }
 
 type apiConfig struct {
@@ -42,11 +42,12 @@ type chirpResponseStruct struct {
 }
 
 type userResponseStruct struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -94,14 +95,14 @@ func (cfg *apiConfig) createChirp(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 401, err.Error())
 		return
 	}
-	userId, err := auth.ValidateJWT(token, cfg.secret)
+	userID, err := auth.ValidateJWT(token, cfg.secret)
 	if err != nil {
 		respondWithError(w, 401, err.Error())
 		return
 	}
 	const maxChirpSize int = 140
 	type params struct {
-		Body   string    `json:"body"`
+		Body string `json:"body"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	decodedParameters := params{}
@@ -118,7 +119,7 @@ func (cfg *apiConfig) createChirp(w http.ResponseWriter, r *http.Request) {
 	cleanedBody := censorBadWords(listOfNotAllowedWords, decodedParameters.Body)
 	newChirpParams := database.CreateChirpParams{
 		Body:   cleanedBody,
-		UserID: userId,
+		UserID: userID,
 	}
 	newChirpInDatabase, err := cfg.datatase.CreateChirp(context.Background(), newChirpParams)
 	if err != nil {
@@ -214,42 +215,53 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
-	defaultTimeoutInSeconds := 3600
+	defaultJWTTimeoutInSeconds := 3600
 	decoder := json.NewDecoder(r.Body)
 	params := userLoginParams{}
 	err := decoder.Decode(&params)
 	if err != nil {
-		respondWithError(w, 400, err.Error())
+		respondWithError(w, 400, "HandlerLogin() :"+err.Error())
 		return
 	}
-	if params.ExpiresInSeconds == nil || *params.ExpiresInSeconds > defaultTimeoutInSeconds {
-		params.ExpiresInSeconds = &defaultTimeoutInSeconds
-	}
+
+	params.ExpiresInSeconds = defaultJWTTimeoutInSeconds
 	user, err := cfg.datatase.GetUser(context.Background(), params.Email)
 	if err != nil {
-		respondWithError(w, 400, err.Error())
+		respondWithError(w, 400, "GetUser() err: "+err.Error())
 		return
 	}
 	validPassword, err := auth.CheckPasswordHash(params.Password, user.HashedPassword)
 	if err != nil {
-		respondWithError(w, 400, err.Error())
+		respondWithError(w, 400, "CheckPasswordHash() : "+err.Error())
 		return
 	}
 	if !validPassword {
-		respondWithError(w, 401, "Unauthorized")
+		respondWithError(w, 401, "Unauthorized : invalid password")
 		return
 	}
-	jwt, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(*params.ExpiresInSeconds)*time.Second)
+	jwt, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(params.ExpiresInSeconds)*time.Second)
 	if err != nil {
-		respondWithError(w, 400, err.Error())
+		respondWithError(w, 400, "MakeJWT() : "+err.Error())
 		return
 	}
+
+	refreshTokenParams := database.CreateRefreshTokenParams{
+		Token:  auth.MakeRefreshToken(),
+		UserID: user.ID,
+	}
+	refreshTokenDB, err := cfg.datatase.CreateRefreshToken(context.Background(), refreshTokenParams)
+	if err != nil {
+		respondWithError(w, 400, "Error from getting token in db"+err.Error())
+		return
+	}
+
 	respondWithJSON(w, 200, userResponseStruct{
 		user.ID,
 		user.CreatedAt,
 		user.UpdatedAt,
 		user.Email,
 		jwt,
+		refreshTokenDB.Token,
 	})
 }
 
@@ -293,6 +305,61 @@ func (cfg *apiConfig) handlerGetChirpFromID(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// Look up the refresh token in the database.
+// If it doesn't exist, or if it's expired or revoked, respond with a 401 status code.
+// Otherwise, respond with a 200 code
+func (cfg *apiConfig) HandlerRefresh(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "GetBearerToken() err : ")
+		return
+	}
+	rTokenDB, err := cfg.datatase.GetRefreshToken(context.Background(), refreshToken)
+	if err != nil {
+		respondWithError(w, 401, "Not found")
+		return
+	}
+
+	if rTokenDB.ExpiresAt.Before(time.Now()) {
+		respondWithError(w, 401, "Expired token")
+		return
+	}
+
+	if rTokenDB.RevokedAt.Valid {
+		respondWithError(w, 401, "Removed")
+		return
+	}
+
+	// everything is valid, create the new access token for the same user
+	currentUser, err := cfg.datatase.GetUserFromRefreshToken(context.Background(), refreshToken)
+	if err != nil {
+		respondWithError(w, 401, "user not found"+err.Error())
+		return
+	}
+	newAccessToken, err := auth.MakeJWT(currentUser, cfg.secret, 1*time.Hour)
+	if err != nil {
+		respondWithError(w, 401, "Error making new token")
+		return
+	}
+	respondWithJSON(w, 200, map[string]string{
+		"token": newAccessToken,
+	})
+}
+
+func (cfg *apiConfig) handlerRevokeEndpoint(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "handlerRevokeToken() : error in getting token from the request header")
+		return
+	}
+	err = cfg.datatase.RevokeToken(context.Background(), refreshToken)
+	if err != nil {
+		respondWithError(w, 401, "handlerRevokeEndpoint() : error updating token in DB")
+		return
+	}
+	respondWithJSON(w, 204, "revoke enpoint success")
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -330,6 +397,8 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", http.HandlerFunc(apiCfg.handlerGetChirps))
 	mux.HandleFunc("GET /api/chirps/{chirpID}", http.HandlerFunc(apiCfg.handlerGetChirpFromID))
 	mux.HandleFunc("POST /api/login", http.HandlerFunc(apiCfg.handlerLogin))
+	mux.HandleFunc("POST /api/refresh", http.HandlerFunc(apiCfg.HandlerRefresh))
+	mux.HandleFunc("POST /api/revoke", http.HandlerFunc(apiCfg.handlerRevokeEndpoint))
 
 	server := &http.Server{
 		Handler: mux,
