@@ -20,10 +20,17 @@ import (
 	_ "github.com/lib/pq"
 )
 
+type userLoginParams struct {
+	Email            string `json:"email"`
+	Password         string `json:"password"`
+	ExpiresInSeconds *int   `json:"expires_in_seconds"`
+}
+
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	datatase       *database.Queries
 	platform       string
+	secret         string
 }
 
 type chirpResponseStruct struct {
@@ -39,6 +46,7 @@ type userResponseStruct struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -80,15 +88,24 @@ func (cfg *apiConfig) reset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) createChirp(w http.ResponseWriter, r *http.Request) {
-	// Validation
+	// User Validation
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+	userId, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
 	const maxChirpSize int = 140
 	type params struct {
 		Body   string    `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	decodedParameters := params{}
-	err := decoder.Decode(&decodedParameters)
+	err = decoder.Decode(&decodedParameters)
 	if err != nil {
 		respondWithError(w, 400, "Error decoding the response")
 		return
@@ -101,7 +118,7 @@ func (cfg *apiConfig) createChirp(w http.ResponseWriter, r *http.Request) {
 	cleanedBody := censorBadWords(listOfNotAllowedWords, decodedParameters.Body)
 	newChirpParams := database.CreateChirpParams{
 		Body:   cleanedBody,
-		UserID: decodedParameters.UserID,
+		UserID: userId,
 	}
 	newChirpInDatabase, err := cfg.datatase.CreateChirp(context.Background(), newChirpParams)
 	if err != nil {
@@ -197,23 +214,23 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
-	type params struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
+	defaultTimeoutInSeconds := 3600
 	decoder := json.NewDecoder(r.Body)
-	decodedParams := params{}
-	err := decoder.Decode(&decodedParams)
+	params := userLoginParams{}
+	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, 400, err.Error())
 		return
 	}
-	user, err := cfg.datatase.GetUser(context.Background(), decodedParams.Email)
+	if params.ExpiresInSeconds == nil || *params.ExpiresInSeconds > defaultTimeoutInSeconds {
+		params.ExpiresInSeconds = &defaultTimeoutInSeconds
+	}
+	user, err := cfg.datatase.GetUser(context.Background(), params.Email)
 	if err != nil {
 		respondWithError(w, 400, err.Error())
 		return
 	}
-	validPassword, err := auth.CheckPasswordHash(decodedParams.Password, user.HashedPassword)
+	validPassword, err := auth.CheckPasswordHash(params.Password, user.HashedPassword)
 	if err != nil {
 		respondWithError(w, 400, err.Error())
 		return
@@ -222,12 +239,17 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 401, "Unauthorized")
 		return
 	}
-
+	jwt, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(*params.ExpiresInSeconds)*time.Second)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+		return
+	}
 	respondWithJSON(w, 200, userResponseStruct{
 		user.ID,
 		user.CreatedAt,
 		user.UpdatedAt,
 		user.Email,
+		jwt,
 	})
 }
 
@@ -278,6 +300,7 @@ func main() {
 	}
 	dbURL := os.Getenv("DB_URL")
 	currentPlatform := os.Getenv("PLATFORM")
+	secretKey := os.Getenv("SECRET")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatalf("error opening databse : %s\n", err)
@@ -292,6 +315,7 @@ func main() {
 		fileserverHits: atomic.Int32{},
 		datatase:       dbQueries,
 		platform:       currentPlatform,
+		secret:         secretKey,
 	}
 
 	mux := http.NewServeMux()
