@@ -360,6 +360,63 @@ func (cfg *apiConfig) handlerRevokeEndpoint(w http.ResponseWriter, r *http.Reque
 	respondWithJSON(w, 204, "revoke enpoint success")
 }
 
+// func handlerUpdateUser() allows the user to update their email and password, given in the
+// request body
+// Expects the accessToken to be sent in the header of the request
+func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) {
+	accessToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "UpdateUser() : cannot get access token from request.Header"+err.Error())
+		return
+	}
+	userIDFromToken, err := auth.ValidateJWT(accessToken, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, "UpdateUser() : accessToken not valid. "+err.Error())
+		return
+	}
+
+	// Requires a new password and email in the request body
+	type params struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	newUserParams := params{}
+	err = decoder.Decode(&newUserParams)
+	if err != nil {
+		respondWithError(w, 400, "handlerUpdateUser() : cannot decode the params from request body")
+		return
+	}
+	hashedPassword, err := auth.HashPassword(newUserParams.Password)
+	if err != nil {
+		respondWithError(w, 401, "handlerUpdateUser() : err hashing new password. "+err.Error())
+		return
+	}
+	dbUserParams := database.UpdateUserParams{
+		Email:          newUserParams.Email,
+		HashedPassword: hashedPassword,
+		ID:             userIDFromToken,
+	}
+	updatedUser, err := cfg.datatase.UpdateUser(context.Background(), dbUserParams)
+	if err != nil {
+		respondWithError(w, 401, "handlerUpdateUser() : error updating the database. "+err.Error())
+		return
+	}
+	type response struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+
+	respondWithJSON(w, 200, response{
+		ID:        updatedUser.ID,
+		CreatedAt: updatedUser.CreatedAt,
+		UpdatedAt: updatedUser.UpdatedAt,
+		Email:     updatedUser.Email,
+	})
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -399,6 +456,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", http.HandlerFunc(apiCfg.handlerLogin))
 	mux.HandleFunc("POST /api/refresh", http.HandlerFunc(apiCfg.HandlerRefresh))
 	mux.HandleFunc("POST /api/revoke", http.HandlerFunc(apiCfg.handlerRevokeEndpoint))
+	mux.HandleFunc("PUT /api/users", http.HandlerFunc(apiCfg.handlerUpdateUser))
 
 	server := &http.Server{
 		Handler: mux,
