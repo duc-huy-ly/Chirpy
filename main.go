@@ -80,8 +80,8 @@ func (cfg *apiConfig) reset(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 403, "Forbidden")
 		return
 	}
-	cfg.fileserverHits = atomic.Int32{}
 	err := cfg.datatase.DeleteUsers(r.Context())
+	cfg.fileserverHits = atomic.Int32{}
 	if err != nil {
 		respondWithError(w, 400, "Could not delete all users from database")
 		return
@@ -291,7 +291,7 @@ func (cfg *apiConfig) handlerGetChirpFromID(w http.ResponseWriter, r *http.Reque
 		respondWithError(w, 400, "Error parsing the ID of chirp inside the request")
 		return
 	}
-	chirp, err := cfg.datatase.GetChirpByID(context.Background(), chirpUUID)
+	chirp, err := cfg.datatase.GetChirp(context.Background(), chirpUUID)
 	if err != nil {
 		respondWithError(w, 404, "Chirp not found")
 		return
@@ -417,6 +417,39 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "handlerDeleteChirp() : error in getting the access token. "+err.Error())
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, 401, "handlerDeleteChirp() : bad autentication. "+err.Error())
+		return
+	}
+	chirpUUID, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		respondWithError(w, 401, "handlerDeleteChirp() : Error parsing the ID of chirp inside the request")
+		return
+	}
+	chirpDB, err := cfg.datatase.GetChirp(context.Background(), chirpUUID)
+	if err != nil {
+		respondWithError(w, 404, "handlerDeleteChirp() : Chirp not found.")
+		return
+	}
+	if chirpDB.UserID != userID {
+		respondWithError(w, 403, "handlerDeleteChirp() : Unauthorized, user is not author of Chirp")
+		return
+	}
+	deleteChirperr := cfg.datatase.DeleteChirp(context.Background(), chirpUUID)
+	if deleteChirperr != nil {
+		respondWithError(w, 401, "Error deleting chirp")
+		return
+	}
+	respondWithJSON(w, 204, "OK")
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -457,7 +490,7 @@ func main() {
 	mux.HandleFunc("POST /api/refresh", http.HandlerFunc(apiCfg.HandlerRefresh))
 	mux.HandleFunc("POST /api/revoke", http.HandlerFunc(apiCfg.handlerRevokeEndpoint))
 	mux.HandleFunc("PUT /api/users", http.HandlerFunc(apiCfg.handlerUpdateUser))
-
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", http.HandlerFunc(apiCfg.handlerDeleteChirp))
 	server := &http.Server{
 		Handler: mux,
 		Addr:    ":" + port,
