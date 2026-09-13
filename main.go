@@ -266,12 +266,29 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 
 // Used by the 'GET /api/chirps' endpoint, returns an array of all chirps in ascending created_at order
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
-	chirps, err := cfg.datatase.GetChirps(context.Background())
-	if err != nil {
-		respondWithError(w, 400, err.Error())
-		return
-	}
+	var chirps []database.Chirp
+	var dberr error
 
+	// TODO : accept optional query paramameter called author id
+	s := r.URL.Query().Get("author_id")
+	if s != "" {
+		parsedUUID, err := uuid.Parse(s)
+		if err != nil {
+			respondWithError(w, 500, "Error parsing uuid ")
+			return
+		}
+		chirps, dberr = cfg.datatase.GetChirpsFrom(context.Background(), parsedUUID)
+		if dberr != nil {
+			respondWithError(w, 500, "handlerGetChirps() : error getting chirps of author from database, "+dberr.Error())
+			return
+		}
+	} else {
+		chirps, dberr = cfg.datatase.GetChirps(context.Background())
+		if dberr != nil {
+			respondWithError(w, 400, dberr.Error())
+			return
+		}
+	}
 	response := make([]chirpResponseStruct, len(chirps))
 	for i, chirp := range chirps {
 		response[i].ID = chirp.ID
@@ -280,7 +297,7 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 		response[i].CreatedAt = chirp.CreatedAt
 		response[i].UpdatedAt = chirp.UpdatedAt
 	}
-	respondWithJSON(w, 201, response)
+	respondWithJSON(w, 200, response)
 }
 
 func (cfg *apiConfig) handlerGetChirpFromID(w http.ResponseWriter, r *http.Request) {
