@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -48,6 +49,7 @@ type userResponseStruct struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
+	ChirpyRed    bool      `json:"is_chirpy_red"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -171,6 +173,7 @@ func censorBadWords(notAllowedWords []string, body string) string {
 	return strings.Join(result, " ")
 }
 
+// createUser responds with status code 201(created)
 func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 	// accepts an email in the request body
 	type params struct {
@@ -193,27 +196,21 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, r *http.Request) {
 		Email:          decodedParameters.Email,
 		HashedPassword: hashedPassword,
 	}
-	newUser, err := cfg.datatase.CreateUser(r.Context(), newUserParams)
+	user, err := cfg.datatase.CreateUser(r.Context(), newUserParams)
 	if err != nil {
 		respondWithError(w, 400, "Error creating new User in database")
 		return
 	}
-
-	type myResponse struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
-	}
-
-	respondWithJSON(w, 201, myResponse{
-		ID:        uuid.UUID(newUser.ID),
-		CreatedAt: newUser.CreatedAt,
-		UpdatedAt: newUser.UpdatedAt,
-		Email:     newUser.Email,
+	respondWithJSON(w, 201, userResponseStruct{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+		ChirpyRed: user.IsChirpyRed,
 	})
 }
 
+// handlerLogin responds with 200(OK) if successful
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	defaultJWTTimeoutInSeconds := 3600
 	decoder := json.NewDecoder(r.Body)
@@ -262,6 +259,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		user.Email,
 		jwt,
 		refreshTokenDB.Token,
+		user.IsChirpyRed,
 	})
 }
 
@@ -281,7 +279,7 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 		response[i].CreatedAt = chirp.CreatedAt
 		response[i].UpdatedAt = chirp.UpdatedAt
 	}
-	respondWithJSON(w, 200, response)
+	respondWithJSON(w, 201, response)
 }
 
 func (cfg *apiConfig) handlerGetChirpFromID(w http.ResponseWriter, r *http.Request) {
@@ -296,7 +294,7 @@ func (cfg *apiConfig) handlerGetChirpFromID(w http.ResponseWriter, r *http.Reque
 		respondWithError(w, 404, "Chirp not found")
 		return
 	}
-	respondWithJSON(w, 200, chirpResponseStruct{
+	respondWithJSON(w, 201, chirpResponseStruct{
 		chirp.ID,
 		chirp.Body,
 		chirp.CreatedAt,
@@ -341,7 +339,7 @@ func (cfg *apiConfig) HandlerRefresh(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 401, "Error making new token")
 		return
 	}
-	respondWithJSON(w, 200, map[string]string{
+	respondWithJSON(w, 201, map[string]string{
 		"token": newAccessToken,
 	})
 }
@@ -360,8 +358,8 @@ func (cfg *apiConfig) handlerRevokeEndpoint(w http.ResponseWriter, r *http.Reque
 	respondWithJSON(w, 204, "revoke enpoint success")
 }
 
-// func handlerUpdateUser() allows the user to update their email and password, given in the
-// request body
+// handlerUpdateUser allows the user to update their email and password, given in the request body
+// Returns status code 200(OK)
 // Expects the accessToken to be sent in the header of the request
 func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) {
 	accessToken, err := auth.GetBearerToken(r.Header)
@@ -402,18 +400,13 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 		respondWithError(w, 401, "handlerUpdateUser() : error updating the database. "+err.Error())
 		return
 	}
-	type response struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
-	}
 
-	respondWithJSON(w, 200, response{
+	respondWithJSON(w, 200, userResponseStruct{
 		ID:        updatedUser.ID,
 		CreatedAt: updatedUser.CreatedAt,
 		UpdatedAt: updatedUser.UpdatedAt,
 		Email:     updatedUser.Email,
+		ChirpyRed: updatedUser.IsChirpyRed,
 	})
 }
 
@@ -448,6 +441,38 @@ func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	respondWithJSON(w, 204, "OK")
+}
+
+func (cfg *apiConfig) handlerWebhook(w http.ResponseWriter, r *http.Request) {
+	type eventParams struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}
+	decodedEventParams := eventParams{}
+	decoder := json.NewDecoder(r.Body)
+	decodeErr := decoder.Decode(&decodedEventParams)
+	if decodeErr != nil {
+		respondWithError(w, 400, "handlerWebhook() : err decoding request body.  "+decodeErr.Error())
+		return
+	}
+	// we don't care if it's any other event
+	if decodedEventParams.Event != "user.upgraded" {
+		w.WriteHeader(204)
+		return
+	}
+	// Update user in the db, mark as premium user
+	_, err := cfg.datatase.UpgradeUser(context.Background(), decodedEventParams.Data.UserID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 404, "user not found")
+			return
+		}
+		respondWithError(w, 500, "handlerWebhook() : something went wrong in the db call, "+err.Error())
+		return
+	}
+	w.WriteHeader(204)
 }
 
 func main() {
@@ -491,6 +516,7 @@ func main() {
 	mux.HandleFunc("POST /api/revoke", http.HandlerFunc(apiCfg.handlerRevokeEndpoint))
 	mux.HandleFunc("PUT /api/users", http.HandlerFunc(apiCfg.handlerUpdateUser))
 	mux.HandleFunc("DELETE /api/chirps/{chirpID}", http.HandlerFunc(apiCfg.handlerDeleteChirp))
+	mux.HandleFunc("POST /api/polka/webhooks", http.HandlerFunc(apiCfg.handlerWebhook))
 	server := &http.Server{
 		Handler: mux,
 		Addr:    ":" + port,
