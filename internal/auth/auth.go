@@ -58,8 +58,8 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	return uuid.Parse(subject)
 }
 
-func GetBearerToken(headers http.Header) (string, error) {
-	authValue := headers.Get("Authorization")
+func GetBearerToken(header http.Header) (string, error) {
+	authValue := header.Get("Authorization")
 	if authValue == "" {
 		return "", fmt.Errorf("header does not contain Authorization")
 	}
@@ -77,4 +77,19 @@ func MakeRefreshToken() string {
 	key := make([]byte, 32)
 	rand.Read(key)
 	return hex.EncodeToString(key)
+}
+
+func GetAPIKey(header http.Header) (string, error) {
+	authValue := header.Get("Authorization")
+	if authValue == "" {
+		return "", fmt.Errorf("header does not contain Authorization")
+	}
+	elements := strings.Fields(authValue)
+	if len(elements) < 2 {
+		return "", fmt.Errorf("missing values inside the Authorization")
+	}
+	if elements[0] != "ApiKey" {
+		return "", fmt.Errorf("authorization doesn't begin with ApiKey")
+	}
+	return elements[1], nil
 }

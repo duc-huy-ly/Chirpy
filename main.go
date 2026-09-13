@@ -32,6 +32,7 @@ type apiConfig struct {
 	datatase       *database.Queries
 	platform       string
 	secret         string
+	polkaKey       string
 }
 
 type chirpResponseStruct struct {
@@ -444,6 +445,16 @@ func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request)
 }
 
 func (cfg *apiConfig) handlerWebhook(w http.ResponseWriter, r *http.Request) {
+	key, apiKeyErr := auth.GetAPIKey(r.Header)
+	if apiKeyErr != nil {
+		respondWithError(w, 401, "handlerWebhook(): err getting the apiKey from request.Header")
+		return
+	}
+	if key != cfg.polkaKey {
+		respondWithError(w, 401, "handlerWebhook(): invalid api key")
+		return
+	}
+
 	type eventParams struct {
 		Event string `json:"event"`
 		Data  struct {
@@ -480,24 +491,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("error getting the env variables : %s\n", err)
 	}
-	dbURL := os.Getenv("DB_URL")
-	currentPlatform := os.Getenv("PLATFORM")
-	secretKey := os.Getenv("SECRET")
-	db, err := sql.Open("postgres", dbURL)
+	db, err := sql.Open("postgres", os.Getenv("DB_URL"))
 	if err != nil {
 		log.Fatalf("error opening databse : %s\n", err)
 		return
 	}
-	dbQueries := database.New(db)
-
 	const fileRootPath = "."
 	const port = "8080"
-
 	apiCfg := &apiConfig{
 		fileserverHits: atomic.Int32{},
-		datatase:       dbQueries,
-		platform:       currentPlatform,
-		secret:         secretKey,
+		datatase:       database.New(db),
+		platform:       os.Getenv("PLATFORM"),
+		secret:         os.Getenv("SECRET"),
+		polkaKey:       os.Getenv("POLKA_KEY"),
 	}
 
 	mux := http.NewServeMux()
@@ -517,6 +523,7 @@ func main() {
 	mux.HandleFunc("PUT /api/users", http.HandlerFunc(apiCfg.handlerUpdateUser))
 	mux.HandleFunc("DELETE /api/chirps/{chirpID}", http.HandlerFunc(apiCfg.handlerDeleteChirp))
 	mux.HandleFunc("POST /api/polka/webhooks", http.HandlerFunc(apiCfg.handlerWebhook))
+
 	server := &http.Server{
 		Handler: mux,
 		Addr:    ":" + port,
