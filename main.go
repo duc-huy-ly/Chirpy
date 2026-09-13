@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -288,6 +289,14 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 			respondWithError(w, 400, dberr.Error())
 			return
 		}
+	}
+
+	// TODO : optional parameter for how the chirps are sorted
+	sorting := r.URL.Query().Get("sort")
+	if sorting == "desc" {
+		sort.Slice(chirps, func(i int, j int) bool {
+			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+		})
 	}
 	response := make([]chirpResponseStruct, len(chirps))
 	for i, chirp := range chirps {
